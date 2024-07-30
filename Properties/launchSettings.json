@@ -1,0 +1,11 @@
+{
+  "profiles": {
+    "FischBowl Sorting Script": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "AZURE_BLOB_CONNECTION_STRING": "DefaultEndpointsProtocol=https;AccountName=fischbowlstorage;AccountKey=4SO26N5413ECNL33iSCjJTxKDCWjiXhAdwprH0ARcUPLvj8KfrFCfaTELwCG7tHat/CI40guJEYf+AStzDg7bg==;EndpointSuffix=core.windows.net",
+        "SQL_CONNECTION_STRING": "Server=tcp:sv-fischbowl.database.windows.net,1433;Initial Catalog=DB_Fischbowl;Persist Security Info=False;User ID=blfische92;Password=PRairie92@@;MultipleActiveResultSets=False;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;"
+      }
+    }
+  }
+}
