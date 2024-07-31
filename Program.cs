@@ -32,16 +32,27 @@ namespace FischBowl_Sorting_Script
             BlobServiceClient blobServiceClient = new BlobServiceClient(ConnectionString);
             BlobContainerClient containerClient = blobServiceClient.GetBlobContainerClient(PhotosContainerName);
 
+            // Ensure the database table for known faces exists
+            await EnsureKnownFacesTableExists();
+
             // Get the current max photo number in the "Processed" directory
             int currentMaxPhotoNumber = await GetCurrentMaxPhotoNumber(containerClient);
 
             // Encode known faces from TrainingPhotos
-            Dictionary<string, List<Matrix<float>>> knownFaces = new Dictionary<string, List<Matrix<float>>>();
+            Dictionary<string, List<Matrix<float>>> knownFaces = await LoadKnownFacesFromDatabase();
+
+            Dictionary<string, List<Matrix<float>>> newEncodings = new Dictionary<string, List<Matrix<float>>>();
+
             await foreach (var blobItem in containerClient.GetBlobsAsync(prefix: "TrainingPhotos/"))
             {
                 string[] pathSegments = blobItem.Name.Split('/');
                 if (pathSegments.Length < 2) continue;
                 string name = pathSegments[1];
+
+                if (!newEncodings.ContainsKey(name))
+                {
+                    newEncodings[name] = new List<Matrix<float>>();
+                }
 
                 BlobClient blobClient = containerClient.GetBlobClient(blobItem.Name);
                 using (var stream = new MemoryStream())
@@ -51,11 +62,7 @@ namespace FischBowl_Sorting_Script
                     List<Matrix<float>> encodings = EncodeFaces(stream, shapePredictor, faceRecognitionModel, blobItem.Name);
                     if (encodings.Count > 0)
                     {
-                        if (!knownFaces.ContainsKey(name))
-                        {
-                            knownFaces[name] = new List<Matrix<float>>();
-                        }
-                        knownFaces[name].AddRange(encodings);
+                        newEncodings[name].AddRange(encodings);
                         Console.WriteLine($"Encoded faces for {name}");
                     }
                     else
@@ -63,6 +70,20 @@ namespace FischBowl_Sorting_Script
                         Console.WriteLine($"No faces found in image {blobItem.Name}, skipping...");
                     }
                 }
+            }
+
+            // Save all new known faces to the database
+            foreach (var kvp in newEncodings)
+            {
+                if (knownFaces.ContainsKey(kvp.Key))
+                {
+                    knownFaces[kvp.Key].AddRange(kvp.Value);
+                }
+                else
+                {
+                    knownFaces[kvp.Key] = kvp.Value;
+                }
+                await SaveKnownFaces(kvp.Key, knownFaces[kvp.Key]);
             }
 
             // Process test images from Unprocess and move them to Processed
@@ -103,13 +124,18 @@ namespace FischBowl_Sorting_Script
                     Console.WriteLine($"Date taken for {blobItem.Name}: {dateTaken?.ToString() ?? "Unknown"}");
 
                     // Save metadata to SQL Database
-                    string newBlobName = $"photo_{++currentMaxPhotoNumber}.jpg";
+                    string newBlobName = $"photo_{++currentMaxPhotoNumber}.webp";
                     string newBlobUrl = containerClient.Uri + "/Processed/" + newBlobName;
                     await SavePhotoMetaData(string.Join(", ", matchedNames), newBlobName, newBlobUrl, dateTaken);
 
-                    // Move the processed blob to the Processed directory with a new name
+                    // Convert image to WebP and move the processed blob to the Processed directory with a new name
                     BlobClient newBlobClient = containerClient.GetBlobClient("Processed/" + newBlobName);
-                    await newBlobClient.StartCopyFromUriAsync(blobClient.Uri);
+                    using (var convertedStream = new MemoryStream())
+                    {
+                        ConvertImageToWebP(stream, convertedStream);
+                        convertedStream.Position = 0;
+                        await newBlobClient.UploadAsync(convertedStream, true);
+                    }
                     await blobClient.DeleteAsync();
                     Console.WriteLine($"Moved {blobItem.Name} to Processed/{newBlobName}");
                 }
@@ -119,6 +145,115 @@ namespace FischBowl_Sorting_Script
             shapePredictor.Dispose();
             faceRecognitionModel.Dispose();
             Console.WriteLine("Photo processing completed successfully.");
+        }
+
+        static async Task EnsureKnownFacesTableExists()
+        {
+            using (SqlConnection conn = new SqlConnection(SqlConnectionString))
+            {
+                await conn.OpenAsync();
+                string query = @"
+                    IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='KnownFaces' AND xtype='U')
+                    CREATE TABLE KnownFaces (
+                        Name NVARCHAR(100) PRIMARY KEY,
+                        Encodings VARBINARY(MAX)
+                    )";
+                using (SqlCommand cmd = new SqlCommand(query, conn))
+                {
+                    await cmd.ExecuteNonQueryAsync();
+                }
+            }
+        }
+
+        static async Task<Dictionary<string, List<Matrix<float>>>> LoadKnownFacesFromDatabase()
+        {
+            Dictionary<string, List<Matrix<float>>> knownFaces = new Dictionary<string, List<Matrix<float>>>();
+
+            using (SqlConnection conn = new SqlConnection(SqlConnectionString))
+            {
+                await conn.OpenAsync();
+                string query = "SELECT Name, Encodings FROM KnownFaces";
+                using (SqlCommand cmd = new SqlCommand(query, conn))
+                {
+                    using (SqlDataReader reader = await cmd.ExecuteReaderAsync())
+                    {
+                        while (await reader.ReadAsync())
+                        {
+                            string name = reader.GetString(0);
+                            byte[] encodingsData = (byte[])reader.GetValue(1);
+                            List<Matrix<float>> encodings = DeserializeEncodings(encodingsData);
+                            knownFaces[name] = encodings;
+                        }
+                    }
+                }
+            }
+
+            return knownFaces;
+        }
+
+        static async Task SaveKnownFaces(string name, List<Matrix<float>> encodings)
+        {
+            using (SqlConnection conn = new SqlConnection(SqlConnectionString))
+            {
+                await conn.OpenAsync();
+                string query = @"
+                    IF EXISTS (SELECT * FROM KnownFaces WHERE Name = @Name)
+                        UPDATE KnownFaces SET Encodings = @Encodings WHERE Name = @Name
+                    ELSE
+                        INSERT INTO KnownFaces (Name, Encodings) VALUES (@Name, @Encodings)";
+                using (SqlCommand cmd = new SqlCommand(query, conn))
+                {
+                    cmd.Parameters.AddWithValue("@Name", name);
+                    cmd.Parameters.AddWithValue("@Encodings", SerializeEncodings(encodings));
+                    await cmd.ExecuteNonQueryAsync();
+                }
+            }
+        }
+
+        static byte[] SerializeEncodings(List<Matrix<float>> encodings)
+        {
+            using (var ms = new MemoryStream())
+            {
+                using (var bw = new BinaryWriter(ms))
+                {
+                    bw.Write(encodings.Count);
+                    foreach (var encoding in encodings)
+                    {
+                        for (int i = 0; i < encoding.Size; i++)
+                        {
+                            bw.Write(encoding[i]);
+                        }
+                    }
+                }
+                return ms.ToArray();
+            }
+        }
+
+        static List<Matrix<float>> DeserializeEncodings(byte[] data)
+        {
+            List<Matrix<float>> encodings = new List<Matrix<float>>();
+            using (var ms = new MemoryStream(data))
+            {
+                using (var br = new BinaryReader(ms))
+                {
+                    int count = br.ReadInt32();
+                    for (int j = 0; j < count; j++)
+                    {
+                        float[] encodingArray = new float[128]; // Adjust this size if necessary
+                        for (int i = 0; i < encodingArray.Length; i++)
+                        {
+                            encodingArray[i] = br.ReadSingle();
+                        }
+                        Matrix<float> encoding = new Matrix<float>(1, 128);
+                        for (int i = 0; i < 128; i++)
+                        {
+                            encoding[0, i] = encodingArray[i];
+                        }
+                        encodings.Add(encoding);
+                    }
+                }
+            }
+            return encodings;
         }
 
         static async Task<int> GetCurrentMaxPhotoNumber(BlobContainerClient containerClient)
@@ -220,6 +355,15 @@ namespace FischBowl_Sorting_Script
                 image.Write(pngFilePath, MagickFormat.Png);
             }
             return pngFilePath;
+        }
+
+        static void ConvertImageToWebP(Stream inputStream, Stream outputStream)
+        {
+            inputStream.Position = 0;
+            using (var image = new MagickImage(inputStream))
+            {
+                image.Write(outputStream, MagickFormat.WebP);
+            }
         }
 
         static DateTime? ExtractDateTaken(Stream imageStream)
