@@ -36,10 +36,13 @@ namespace FischBowl_Sorting_Script
             int currentMaxPhotoNumber = await GetCurrentMaxPhotoNumber(containerClient);
 
             // Encode known faces from TrainingPhotos
-            Dictionary<string, Matrix<float>> knownFaces = new Dictionary<string, Matrix<float>>();
+            Dictionary<string, List<Matrix<float>>> knownFaces = new Dictionary<string, List<Matrix<float>>>();
             await foreach (var blobItem in containerClient.GetBlobsAsync(prefix: "TrainingPhotos/"))
             {
-                string name = Path.GetFileNameWithoutExtension(blobItem.Name);
+                string[] pathSegments = blobItem.Name.Split('/');
+                if (pathSegments.Length < 2) continue;
+                string name = pathSegments[1];
+
                 BlobClient blobClient = containerClient.GetBlobClient(blobItem.Name);
                 using (var stream = new MemoryStream())
                 {
@@ -48,14 +51,22 @@ namespace FischBowl_Sorting_Script
                     List<Matrix<float>> encodings = EncodeFaces(stream, shapePredictor, faceRecognitionModel, blobItem.Name);
                     if (encodings.Count > 0)
                     {
-                        knownFaces[name] = encodings[0]; // Assuming one face per image for known faces
+                        if (!knownFaces.ContainsKey(name))
+                        {
+                            knownFaces[name] = new List<Matrix<float>>();
+                        }
+                        knownFaces[name].AddRange(encodings);
+                        Console.WriteLine($"Encoded faces for {name}");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"No faces found in image {blobItem.Name}, skipping...");
                     }
                 }
-                Console.WriteLine($"Encoded face for {name}");
             }
 
             // Process test images from Unprocess and move them to Processed
-            await foreach (var blobItem in containerClient.GetBlobsAsync(prefix: "Unprocess/"))
+            await foreach (var blobItem in containerClient.GetBlobsAsync(prefix: "Unprocessed/"))
             {
                 string extension = Path.GetExtension(blobItem.Name).ToLower();
                 if (extension == ".docx")
@@ -70,6 +81,12 @@ namespace FischBowl_Sorting_Script
                     await blobClient.DownloadToAsync(stream);
                     stream.Position = 0;
                     List<Matrix<float>> unknownEncodings = EncodeFaces(stream, shapePredictor, faceRecognitionModel, blobItem.Name);
+                    if (unknownEncodings.Count == 0)
+                    {
+                        Console.WriteLine($"No faces found in image {blobItem.Name}, skipping...");
+                        continue;
+                    }
+
                     List<string> matchedNames = new List<string>();
                     foreach (var unknownEncoding in unknownEncodings)
                     {
@@ -176,7 +193,7 @@ namespace FischBowl_Sorting_Script
 
             Rectangle[] faces = Dlib.GetFrontalFaceDetector().Operator(img);
             if (faces.Length == 0)
-                throw new Exception("No faces found in image");
+                return new List<Matrix<float>>(); // No faces found
 
             List<Matrix<float>> encodings = new List<Matrix<float>>();
             foreach (var face in faces)
@@ -224,15 +241,18 @@ namespace FischBowl_Sorting_Script
             return null;
         }
 
-        static string IdentifyFace(Matrix<float> unknownEncoding, Dictionary<string, Matrix<float>> knownFaces)
+        static string IdentifyFace(Matrix<float> unknownEncoding, Dictionary<string, List<Matrix<float>>> knownFaces)
         {
             const double Tolerance = 0.5; // Reduced tolerance for better accuracy
-            foreach (KeyValuePair<string, Matrix<float>> kvp in knownFaces)
+            foreach (KeyValuePair<string, List<Matrix<float>>> kvp in knownFaces)
             {
-                double distance = ComputeEuclideanDistance(unknownEncoding, kvp.Value);
-                if (distance < Tolerance)
+                foreach (var knownEncoding in kvp.Value)
                 {
-                    return kvp.Key;
+                    double distance = ComputeEuclideanDistance(unknownEncoding, knownEncoding);
+                    if (distance < Tolerance)
+                    {
+                        return kvp.Key;
+                    }
                 }
             }
             return null;
