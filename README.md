@@ -14,12 +14,21 @@ This project is a photo processing script designed to process and organize photo
 
 ## Features
 
-- Downloads photos from Azure Blob Storage
-- Detects and encodes faces using DlibDotNet
-- Recognizes known faces using pre-trained models
-- Stores recognized faces and metadata in a SQL database
-- Converts images to WebP format
-- Extracts date taken from photo metadata
+
+1. **Face Detection**: Utilizing advanced image processing techniques, the script detects faces within photos, allowing for the identification and cataloging of individuals present in the images.
+
+2. **Face Recognition**: The script employs pre-trained models to recognize and distinguish between different individuals. This feature enables the automatic tagging and grouping of photos based on the identified persons.
+
+3. **Metadata Storage**: The script captures and stores detailed metadata for each photo, including information about the detected faces and other relevant attributes. This metadata is then securely stored in a SQL Server database, providing a robust and reliable means of managing and querying photo information.
+
+4. **Integration with Azure Blob Storage**: To handle large volumes of photos efficiently, the script integrates with Azure Blob Storage. This cloud-based storage solution offers scalable, durable, and secure storage for the photos, ensuring they are easily accessible for processing and retrieval.
+
+5. **Image Conversion**: The script also includes functionality to convert images to the WebP format, which is known for its superior compression and quality characteristics. This conversion helps in reducing storage costs and improving load times when photos are accessed.
+
+6. **Date Extraction**: Using metadata extraction libraries, the script can determine the date a photo was taken. This information is valuable for organizing photos chronologically and for various other time-based queries.
+
+This app was designed to utilize these features to assist families or groups easyily organize large libraries of photos by people present in the photo. 
+
 
 ## Requirements
 
@@ -70,18 +79,18 @@ Update the paths in Configuration.cs if necessary.
 
 ## Project Structure
 
-├── FischBowl_Sorting_Script
-│   ├── Configuration.cs
-│   ├── PhotoProcessor.cs
-│   ├── BlobStorageService.cs
-│   ├── DatabaseService.cs
-│   ├── FaceRecognitionService.cs
-│   ├── ImageService.cs
-│   ├── Models
-│   │   ├── KnownFaces.cs
-│   │   └── PhotoMetaData.cs
-│   └── Program.cs
-└── README.md
+1. FischBowl_Sorting_Script
+ a.Configuration.cs
+ b.  PhotoProcessor.cs
+ c. BlobStorageService.cs
+ d. DatabaseService.cs
+ e. FaceRecognitionService.cs
+ f. ImageService.cs
+ h. Models
+   (1) KnownFaces.cs
+   (2) PhotoMetaData.cs
+ j. Program.cs
+ 2. README.md
 
 ## Contributions
 
